@@ -4,7 +4,7 @@ from functools import total_ordering
 
 from math import isclose
 
-from time_me.runner import Runner, runner as to_runner
+from time_me.runner import Runner, runner as to_runner, ObjectRunner
 from time_me.timer import Timer
 
 ArgSet_Raw = Tuple[Tuple, Dict]
@@ -22,10 +22,13 @@ def parse_argset(a):
 
 
 class Coach:
-    def __init__(self, sanity_argsets: Mapping[ArgSet, Any] = None):
+    def __init__(self, sanity_argsets: Mapping[ArgSet, Any] = None, sanity_tol=1e-7, verbose=False):
         self._sanity_argsets = sanity_argsets or {}
+        self._sanity_tol = sanity_tol
 
         self._measured = set()
+
+        self.verbose = verbose
 
     def call(self, runner: Runner, argset: ArgSet, timer: Timer):
         a, k = parse_argset(argset)
@@ -33,9 +36,29 @@ class Coach:
             runner(*a, **k)
 
     def sane(self, expected_value: Any, actual: Any):
-        if isinstance(actual, (float, int)):
-            return isclose(actual, expected_value)
-        return expected_value == actual
+        if expected_value == actual:
+            return True
+        if isinstance(actual, (float, int)) and isinstance(expected_value, (float, int)) \
+                and isclose(actual, expected_value, abs_tol=self._sanity_tol):
+            return True
+        if isinstance(actual, Mapping) and isinstance(expected_value, Mapping) \
+                and self.sane(expected_value.items(), actual.items()):
+            return True
+        if isinstance(actual, Iterable) and isinstance(expected_value, Iterable) \
+                and type(expected_value) == type(actual):
+            i, j = iter(expected_value), iter(actual)
+            end = object()
+            while True:
+                v_1, v_2 = next(i, end), next(j, end)
+                if v_1 is end:
+                    if v_2 is end:
+                        return True
+                    break
+                if v_2 is end:
+                    break
+                if not self.sane(v_1, v_2):
+                    break
+        return False
 
     def iter_argsets(self, timer) -> Iterable[ArgSet_Raw]:
         yield ((), {})
@@ -65,7 +88,9 @@ class Coach:
         return ret
 
     def measure(self, obj):
-        self(obj)
+        result = self(obj)
+        if self.verbose:
+            print(result)
         return obj
 
     def compare(self, *objs):
@@ -84,7 +109,26 @@ class Coach:
 
         return self.ResultComparison(sorted(results))
 
-    @total_ordering
+    def trial(self, obj_key: Union[int, str] = 0):
+        def ret(func):
+            def ret(*args, __name__=None, **kwargs):
+                if isinstance(obj_key, int):
+                    if len(args) <= obj_key:
+                        raise ValueError(f'trial must have at least {obj_key - 1} positional arguments')
+                    obj = args[obj_key]
+                else:
+                    if obj_key not in kwargs:
+                        raise ValueError(f'trial must have {obj_key} keyword arguments')
+                    obj = kwargs[obj_key]
+                runner = ObjectRunner(obj, func, args, kwargs)
+                if __name__:
+                    runner.__name__ = __name__
+                return self(runner)
+
+            return ret
+
+        return ret
+
     class Result:
         def __init__(self, runner: Runner, total_time: SupportsFloat, n: int):
             self.runner = runner
@@ -96,6 +140,15 @@ class Coach:
 
         def __lt__(self, other):
             return float(self) < float(other)
+
+        def __gt__(self, other):
+            return float(self) > float(other)
+
+        def __le__(self, other):
+            return float(self) <= float(other)
+
+        def __ge__(self, other):
+            return float(self) >= float(other)
 
         def __str__(self):
             if self.n > 1:
@@ -125,13 +178,21 @@ class Coach:
             import matplotlib.pyplot as plt
 
             plt.bar(
-                range(len(self)), [float(r) for r in self], tick_label=[r.runner.__name__ for r in self]
+                range(len(self)), [float(r) for r in self], tick_label=[str(r.runner) for r in self]
             )
             plt.ylabel('seconds / run')
 
-            best = self[0]
-            for i, not_best in enumerate(self[1:], 1):
-                plt.text(i, not_best / 2, f'{not_best / best:.1f}x {best.runner.__name__}', ha='center', wrap=True)
+            comparisons = [self[0], None]
+            for i, result in enumerate(self):
+                msg = [f'{float(result):.2e} sec']
+                for cmp in comparisons:
+                    if (not cmp) or cmp <= 0 or cmp == result:
+                        continue
+                    msg.append(f'{result / cmp:.1f}x {cmp.runner}')
+
+                plt.text(i, float(result) / 2, '\n'.join(msg), ha='center', va='center', wrap=True)
+                if result not in comparisons:
+                    comparisons[-1] = result
 
             if autoshow:
                 plt.show()

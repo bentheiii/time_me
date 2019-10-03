@@ -1,6 +1,6 @@
 # Time_Me
 time_me is a utility package to easily compare performance of different function implementations.
-```
+```python
 from io import StringIO
 
 from time_me import TimeLimitCoach

@@ -1,5 +1,10 @@
 from io import StringIO
 
+import matplotlib
+
+# Make sure that we are using QT5
+matplotlib.use('Qt5Agg')
+
 from time_me import *
 
 strings = [str(i) for i in range(1000)]
